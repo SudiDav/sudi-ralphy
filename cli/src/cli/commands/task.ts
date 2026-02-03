@@ -78,8 +78,9 @@ export async function runTask(task: string, options: RuntimeOptions): Promise<vo
 					return await engine.executeStreaming(
 						prompt,
 						workDir,
-						(step) => {
-							spinner.updateStep(step);
+						(stepInfo) => {
+							spinner.updateStep(stepInfo.step);
+							spinner.updateToolOutput(stepInfo.toolOutput || null, stepInfo.codeSnippet, stepInfo.diff, stepInfo.todos);
 						},
 						engineOptions,
 					);

@@ -166,7 +166,7 @@ export async function runSequential(options: ExecutionOptions): Promise<Executio
 								workDir,
 								(stepInfo) => {
 									spinner.updateStep(stepInfo.step);
-									spinner.updateToolOutput(stepInfo.toolOutput || null);
+									spinner.updateToolOutput(stepInfo.toolOutput || null, stepInfo.codeSnippet, stepInfo.diff, stepInfo.todos);
 								},
 								engineOptions,
 							);

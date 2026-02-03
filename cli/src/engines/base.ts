@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import type { AIEngine, AIResult, EngineOptions, ProgressCallback, StepInfo } from "./types.ts";
+import type { AIEngine, AIResult, DiffInfo, EngineOptions, ProgressCallback, StepInfo, TodoItem } from "./types.ts";
 
 // Check if running in Bun
 const isBun = typeof Bun !== "undefined";
@@ -315,15 +315,65 @@ function formatCommand(command: string): string {
 	return `Running: ${truncate(command, 50)}`;
 }
 
-/**
- * Extract tool info from Claude's stream-json format
- * Claude format: { type: "assistant", message: { content: [{ type: "tool_use", name: "Read", input: { file_path: "..." } }] } }
- */
-function extractToolFromClaudeFormat(parsed: Record<string, unknown>): {
+function extractCodeSnippet(code: string, maxLines = 3): string[] {
+	if (!code) return [];
+	const lines = code.split("\n").filter((l) => l.trim());
+	return lines.slice(0, maxLines).map((line) => truncate(line.trim(), 60));
+}
+
+function createDiffInfo(filePath: string, oldContent: string, newContent: string, maxLines = 4): DiffInfo | undefined {
+	if (!newContent && !oldContent) return undefined;
+	const oldLines = oldContent ? oldContent.split("\n").slice(0, maxLines).map((l) => truncate(l, 70)) : undefined;
+	const newLines = newContent ? newContent.split("\n").slice(0, maxLines).map((l) => truncate(l, 70)) : undefined;
+	return { filePath, oldLines, newLines };
+}
+
+let currentTodos: TodoItem[] = [];
+
+function parseTodosFromLine(line: string): TodoItem[] | null {
+	try {
+		const parsed = JSON.parse(line.trim());
+		if (parsed.type === "assistant" && parsed.message?.content) {
+			const content = parsed.message.content as Array<Record<string, unknown>>;
+			for (const item of content) {
+				if (item.type === "tool_use" && (item.name === "TodoWrite" || item.name === "todowrite" || item.name === "mcp_todowrite")) {
+					const input = item.input as Record<string, unknown>;
+					if (input?.todos && Array.isArray(input.todos)) {
+						currentTodos = (input.todos as Array<Record<string, unknown>>).map((t) => ({
+							id: String(t.id || ""),
+							content: String(t.content || ""),
+							status: (t.status as "pending" | "in_progress" | "completed") || "pending",
+						}));
+						return currentTodos;
+					}
+				}
+			}
+		}
+	} catch {
+		return null;
+	}
+	return null;
+}
+
+export function getCurrentTodos(): TodoItem[] {
+	return currentTodos;
+}
+
+export function clearCurrentTodos(): void {
+	currentTodos = [];
+}
+
+interface ToolInfo {
 	toolName: string;
 	filePath: string;
 	command: string;
-} | null {
+	content?: string;
+	oldString?: string;
+	newString?: string;
+	rawFilePath?: string;
+}
+
+function extractToolFromClaudeFormat(parsed: Record<string, unknown>): ToolInfo | null {
 	if (parsed.type !== "assistant") return null;
 
 	const message = parsed.message as Record<string, unknown> | undefined;
@@ -332,14 +382,17 @@ function extractToolFromClaudeFormat(parsed: Record<string, unknown>): {
 	const content = message.content as Array<Record<string, unknown>>;
 	if (!Array.isArray(content)) return null;
 
-	// Find tool_use in content array
 	for (const item of content) {
 		if (item.type === "tool_use" && item.name) {
 			const toolName = (item.name as string).toLowerCase();
 			const input = (item.input as Record<string, unknown>) || {};
-			const filePath = ((input.file_path || input.path || "") as string).toLowerCase();
+			const rawFilePath = (input.file_path || input.path || "") as string;
+			const filePath = rawFilePath.toLowerCase();
 			const command = ((input.command || "") as string).toLowerCase();
-			return { toolName, filePath, command };
+			const codeContent = (input.content || "") as string;
+			const oldString = (input.old_string || input.oldString || "") as string;
+			const newString = (input.new_string || input.newString || "") as string;
+			return { toolName, filePath, command, content: codeContent, oldString, newString, rawFilePath };
 		}
 	}
 
@@ -351,16 +404,18 @@ function extractToolFromClaudeFormat(parsed: Record<string, unknown>): {
  * Returns step info including step name and optional tool output
  */
 export function detectStepFromOutput(line: string): StepInfo | null {
-	// Fast path: skip non-JSON lines
 	const trimmed = line.trim();
 	if (!trimmed.startsWith("{")) {
 		return null;
 	}
 
+	const todos = parseTodosFromLine(line);
+	if (todos) {
+		return { step: "Planning", todos };
+	}
+
 	try {
 		const parsed = JSON.parse(trimmed);
-
-		// Try Claude's stream-json format first (nested in message.content)
 		const claudeTool = extractToolFromClaudeFormat(parsed);
 
 		let toolName = "";
@@ -448,14 +503,20 @@ export function detectStepFromOutput(line: string): StepInfo | null {
 
 		// Writing tests - only for write operations to test files
 		if (isWriteOperation && isTestFile(filePath)) {
-			const toolOutput = filePath ? formatFilePath(filePath) : undefined;
-			return { step: "Writing tests", toolOutput };
+			const rawFilePath = claudeTool?.rawFilePath || parsed.file_path || parsed.filePath || parsed.path || "";
+			const oldContent = claudeTool?.oldString || "";
+			const newContent = claudeTool?.newString || claudeTool?.content || "";
+			const diff = createDiffInfo(rawFilePath, oldContent, newContent);
+			return { step: "Writing tests", diff };
 		}
 
 		// Writing/Editing code
 		if (isWriteOperation) {
-			const toolOutput = filePath ? formatFilePath(filePath) : undefined;
-			return { step: "Implementing", toolOutput };
+			const rawFilePath = claudeTool?.rawFilePath || parsed.file_path || parsed.filePath || parsed.path || "";
+			const oldContent = claudeTool?.oldString || "";
+			const newContent = claudeTool?.newString || claudeTool?.content || "";
+			const diff = createDiffInfo(rawFilePath, oldContent, newContent);
+			return { step: "Implementing", diff };
 		}
 
 		return null;

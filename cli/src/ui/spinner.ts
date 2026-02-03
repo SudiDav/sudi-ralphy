@@ -1,5 +1,6 @@
 import { createSpinner } from "nanospinner";
 import pc from "picocolors";
+import type { DiffInfo, TodoItem } from "../engines/types.ts";
 import { formatDuration } from "./logger.ts";
 
 export type SpinnerInstance = ReturnType<typeof createSpinner>;
@@ -31,6 +32,9 @@ export class ProgressSpinner {
 	private stepHistory: OperationTiming[] = [];
 	private stepStartTime: number;
 	private toolOutput: string | null = null;
+	private codeSnippet: string[] | null = null;
+	private diff: DiffInfo | null = null;
+	private todos: TodoItem[] = [];
 
 	constructor(task: string, settings?: string[]) {
 		this.task = task.length > 40 ? `${task.slice(0, 37)}...` : task;
@@ -49,13 +53,49 @@ export class ProgressSpinner {
 	private formatText(): string {
 		const elapsed = Date.now() - this.startTime;
 		const time = formatDuration(elapsed);
+		const lines: string[] = [];
+
+		if (this.todos.length > 0) {
+			lines.push(pc.dim("─".repeat(50)));
+			lines.push(pc.bold("Todos:"));
+			for (const todo of this.todos) {
+				const icon = todo.status === "completed" ? pc.green("✓") : todo.status === "in_progress" ? pc.yellow("●") : pc.dim("○");
+				const text = todo.status === "completed" ? pc.dim(todo.content) : todo.content;
+				lines.push(`  ${icon} ${text}`);
+			}
+			lines.push(pc.dim("─".repeat(50)));
+		}
 
 		const settingsStr = this.settings ? ` ${pc.yellow(this.settings)}` : "";
-		let text = `${pc.cyan(this.currentStep)}${settingsStr} ${pc.dim(`[${time}]`)} ${this.task}`;
-		if (this.toolOutput) {
-			text += `\n  └─ ${pc.dim(this.toolOutput)}`;
+		lines.push(`${pc.cyan(this.currentStep)}${settingsStr} ${pc.dim(`[${time}]`)} ${this.task}`);
+
+		if (this.diff) {
+			lines.push("");
+			lines.push(`  ${pc.dim("─")} Edit ${pc.cyan(this.diff.filePath)}`);
+			const startLine = this.diff.startLine || 1;
+			if (this.diff.oldLines && this.diff.oldLines.length > 0) {
+				for (let i = 0; i < this.diff.oldLines.length; i++) {
+					const lineNum = String(startLine + i).padStart(3, " ");
+					lines.push(`  ${pc.dim(lineNum)} ${pc.red("-")} ${pc.red(this.diff.oldLines[i])}`);
+				}
+			}
+			if (this.diff.newLines && this.diff.newLines.length > 0) {
+				for (let i = 0; i < this.diff.newLines.length; i++) {
+					const lineNum = String(startLine + i).padStart(3, " ");
+					lines.push(`  ${pc.dim(lineNum)} ${pc.green("+")} ${pc.green(this.diff.newLines[i])}`);
+				}
+			}
+		} else if (this.toolOutput) {
+			lines.push(`  ${pc.dim("└─")} ${pc.dim(this.toolOutput)}`);
+			if (this.codeSnippet && this.codeSnippet.length > 0) {
+				for (let i = 0; i < this.codeSnippet.length; i++) {
+					const lineNum = String(i + 1).padStart(3, " ");
+					lines.push(`  ${pc.dim(lineNum)} ${pc.green("+")} ${pc.green(this.codeSnippet[i])}`);
+				}
+			}
 		}
-		return text;
+
+		return lines.join("\n");
 	}
 
 	/**
@@ -80,11 +120,11 @@ export class ProgressSpinner {
 		this.spinner.update({ text: this.formatText() });
 	}
 
-	/**
-	 * Update the tool output shown below the main spinner line
-	 */
-	updateToolOutput(output: string | null): void {
+	updateToolOutput(output: string | null, codeSnippet?: string[] | null, diff?: DiffInfo | null, todos?: TodoItem[]): void {
 		this.toolOutput = output;
+		this.codeSnippet = codeSnippet || null;
+		this.diff = diff || null;
+		if (todos) this.todos = todos;
 		this.spinner.update({ text: this.formatText() });
 	}
 

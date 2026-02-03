@@ -21,14 +21,26 @@ export interface EngineOptions {
 	engineArgs?: string[];
 }
 
-/**
- * Information about a detected step, including optional tool output
- */
 export interface StepInfo {
-	/** Step name like "Reading code", "Implementing", etc. */
 	step: string;
-	/** Tool output like file path or command (truncated) */
 	toolOutput?: string;
+	codeSnippet?: string[];
+	filePath?: string;
+	diff?: DiffInfo;
+	todos?: TodoItem[];
+}
+
+export interface DiffInfo {
+	filePath: string;
+	oldLines?: string[];
+	newLines?: string[];
+	startLine?: number;
+}
+
+export interface TodoItem {
+	id: string;
+	content: string;
+	status: "pending" | "in_progress" | "completed";
 }
 
 /**
